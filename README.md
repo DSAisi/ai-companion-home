@@ -35,7 +35,8 @@ ai-companion-home/
 │   ├── 05-ai-member.md    # 第五步：让 AI 作为房间成员接入
 │   ├── 06-memory.md       # 第六步：持久记忆（换窗不丢）
 │   ├── 07-troubleshoot.md # 踩坑记录（血泪合集）
-│   └── 08-moderation.md   # 模型护栏实测：边界不在词上，在文体上
+│   ├── 08-moderation.md   # 模型护栏实测：边界不在词上，在文体上
+│   └── 09-own-account.md  # 让 AI 有自己的号（以小红书为例）
 ├── examples/              # 可直接参考的配置示例（全部脱敏）
 └── LICENSE                # MIT
 ```

@@ -168,9 +168,6 @@ node examples/body-signals.mjs 你今天那份.jsonl 8 --md out/today.md
 
 ---
 
-
----
-
 ## 三·五、iPhone 用户看这里
 
 **先说结论**：iPhone 上「连续几天在后台默默记录」这件事，比安卓难得多。
@@ -436,9 +433,6 @@ LEFT=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
 | 有没有在压 | `ls raw/*.gz \| wc -l` | 应该有几天了 |
 | 摘要有没有生成 | `ls out/*.md \| wc -l` | 一天一个 |
 | 盘还剩多少 | `df -h /` | > 20% |
-
----
-
 
 ---
 

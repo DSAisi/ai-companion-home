@@ -182,10 +182,80 @@ function makeDemo(path) {
   fs.writeFileSync(path, lines.join("\n"));
 }
 
+/* —— 准实时：只读新增的字节，不重扫整个文件 ——
+   为什么不用 setInterval 重跑 analyze：一天的原始文件接近 100MB，每 5 秒重读一遍，
+   机器会被自己转晕，而且你看到的还是落后几秒的数据。增量读才是实时。 */
+async function watch(file, tz, sec) {
+  let offset = 0, prev = null;
+  const hours = Array.from({ length: 24 }, () => ({ samples: 0, moves: 0 }));
+  for (;;) {
+    let fd;
+    try {
+      fd = fs.openSync(file, "r");
+      const size = fs.fstatSync(fd).size;
+      if (size > offset) {
+        const buf = Buffer.alloc(size - offset);
+        fs.readSync(fd, buf, 0, buf.length, offset);
+        const text = buf.toString("utf8");
+        const cut = text.lastIndexOf("\n");
+        if (cut >= 0) {
+          offset += Buffer.byteLength(text.slice(0, cut + 1), "utf8");
+          for (const line of text.slice(0, cut + 1).split("\n")) {
+            if (!line.trim()) continue;
+            const p = parseLine(line);
+            if (!p || !p.v) continue;
+            const h = hours[hourOf(p.t, tz)];
+            h.samples++;
+            if (prev) {
+              const d = Math.hypot(p.v[0] - prev[0], p.v[1] - prev[1], p.v[2] - prev[2]);
+              if (d > MOVE_EPS) h.moves++;
+            }
+            prev = p.v;
+          }
+        }
+      }
+    } catch (e) {
+      console.log(`（读不到文件：${e.message}）`);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+
+    const nowH = new Date(Date.now() + tz * 3600000).getUTCHours();
+    const today = hours.map((h, i) => ({ i, ...h })).filter((h) => h.samples >= MIN_SAMPLES);
+    const total = today.reduce((a, h) => a + h.moves, 0);
+    const hh = hours[nowH] || { samples: 0, moves: 0 };
+    console.log(
+      `[${String(nowH).padStart(2, "0")} 点] 今日累计动作 ${String(total).padStart(7)}  ` +
+      `本小时 ${String(hh.moves).padStart(5)}/${hh.samples}  ` +
+      `${hh.samples < MIN_SAMPLES ? "（本小时样本还不够）" : hh.moves < STILL_HOUR ? "→ 没动" : "→ 在动"}`
+    );
+    await new Promise((r) => setTimeout(r, sec * 1000));
+  }
+}
+
+/* —— 提醒：只在真有信号的时候才说话。说第一遍是关心，说第三遍是监视 —— */
+function remind(r, tz) {
+  const nowH = new Date(Date.now() + tz * 3600000).getUTCHours();
+  const prevH = (nowH + 23) % 24;
+  const h = r.hours[prevH];
+  const day = nowH >= 9 && nowH <= 22;
+  if (h.samples >= MIN_SAMPLES && h.moves < STILL_HOUR && day) {
+    const msg = `过去一小时几乎没动（${h.moves} 次）—— 你可能坐太久了`;
+    console.log(msg);
+    const url = process.env.BARK_URL;
+    if (url) fetch(`${url}/${encodeURIComponent("坐太久了")}/${encodeURIComponent(msg)}`).catch(() => {});
+    return;
+  }
+  console.log("（没有需要提醒的）");
+}
+
 /* —— 主流程 —— */
-const args = argv.filter((a) => !a.startsWith("--") && a !== MD_OUT);
+const args = argv.filter((a) => !a.startsWith("--") && a !== MD_OUT && a !== "提醒" && a !== "--remind");
 const target = args[0];
 const tz = Number(args[1] ?? 8);
+const TZN = Number.isFinite(tz) ? tz : 8;
+const WATCH = argv.includes("--watch");
+const REMIND = argv.includes("提醒") || argv.includes("--remind");
 
 const DEMO = argv.includes("--demo");
 let file = target;
@@ -194,14 +264,46 @@ if (DEMO) {
   makeDemo(file);
   console.log(`（合成数据已写到 ${file}）\n`);
 } else if (!target) {
-  console.error("用法：node body-signals.mjs <文件.jsonl> [时区=8]   或   --demo");
+  console.error("用法：node body-signals.mjs <文件.jsonl> [时区=8] [--watch 秒] [--md 出.md]");
+  console.error("      node body-signals.mjs 提醒 <文件.jsonl>     # 只在真该提醒时说话");
+  console.error("      node body-signals.mjs --demo                # 合成数据跑一遍");
+  console.error("      node body-signals.mjs 归档                  # 旧文件 gzip");
   process.exit(1);
 }
 
-const r = await analyze(file, Number.isFinite(tz) ? tz : 8);
-const text = report(r);
-console.log(text);
-if (MD_OUT) {
-  fs.writeFileSync(MD_OUT, text);
-  console.log(`\n已写 ${MD_OUT}`);
+if (argv[0] === "归档") {
+  const RAW = process.env.RAW_DIR || new URL("./raw/", import.meta.url).pathname;
+  const files = fs.readdirSync(RAW).filter((f) => /^sense-.*\.jsonl$/.test(f)).sort();
+  const keep = files.slice(-2);
+  let saved = 0;
+  for (const f of files) {
+    if (keep.includes(f)) continue;
+    const src = RAW + f, sz = fs.statSync(src).size;
+    const zlib = await import("zlib");
+    fs.writeFileSync(src + ".gz", zlib.gzipSync(fs.readFileSync(src), { level: 9 }));
+    fs.unlinkSync(src);
+    saved += sz - fs.statSync(src + ".gz").size;
+    console.log(`压缩 ${f}`);
+  }
+  console.log(`合计省 ${(saved / 1048576).toFixed(0)} MB（可逆：gunzip 就回来）`);
+  process.exit(0);
+}
+
+if (WATCH) {
+  const i = argv.indexOf("--watch");
+  const sec = Number(argv[i + 1]) || 5;
+  console.log(`（盯着 ${file}，每 ${sec} 秒一次；Ctrl-C 退出）\n`);
+  await watch(file, TZN, sec);
+} else {
+  const r = await analyze(file, TZN);
+  if (REMIND) {
+    remind(r, TZN);
+  } else {
+    const text = report(r);
+    console.log(text);
+    if (MD_OUT) {
+      fs.writeFileSync(MD_OUT, text);
+      console.log(`\n已写 ${MD_OUT}`);
+    }
+  }
 }

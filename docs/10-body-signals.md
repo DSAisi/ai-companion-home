@@ -19,9 +19,11 @@
 2. [数据链路总图](#二数据链路总图)
 2.5 [先跑通再装手机（5 分钟版）](#二五先跑通再装手机5-分钟版)
 3. [采集端：装什么、怎么配](#三采集端装什么怎么配)
+3.5 [**iPhone 用户看这里**](#三五iphone-用户看这里)
 4. [传输：手机的数据怎么到服务器](#四传输手机的数据怎么到服务器)
 5. [具体实现：分析器的核心逻辑](#五具体实现分析器的核心逻辑)
 6. [磁盘怎么不会撑爆](#六磁盘怎么不会撑爆重点)
+6.5 [把一周画成一张图](#六五把一周画成一张图)
 7. [怎么实时看到数据](#七怎么实时看到数据重点)
 7.5 [跑了一个月，突然没数据了](#七五跑了一个月突然没数据了)
 8. [接给 AI 的三层](#八接给-ai-的三层)
@@ -166,6 +168,91 @@ node examples/body-signals.mjs 你今天那份.jsonl 8 --md out/today.md
 
 ---
 
+
+---
+
+## 三·五、iPhone 用户看这里
+
+**先说结论**：iPhone 上「连续几天在后台默默记录」这件事，比安卓难得多。
+不是应用写得烂，是 iOS 的后台模型就是「挂起」，没有安卓那种「电池优化白名单」可加。
+
+所以 iPhone 用户有三条路，**按这个顺序试**：
+
+### 路 1：phyphox（先试这个，可能不用换区）
+
+**phyphox（中文名「手机物理工坊」）** 是德国亚琛工业大学做的免费开源教育应用，中文界面，
+在大多数地区的 App Store 都能搜到。先去 App Store 搜一次「phyphox」或「手机物理工坊」：
+
+- **搜得到** → 用它。它能录加速度、能导出 CSV，界面上选 `Acceleration` → 导出即可。
+- **搜不到** → 走路 2 或路 3。
+
+⚠ phyphox 是给课堂实验设计的，**不擅长长时间后台录制**。短时（几小时）够用，一整晚基本会被系统掐。
+
+### 路 2：Sensor Logger（功能最全，但要外区账号）
+
+App Store 里叫 **Sensor Logger**（作者 Tsz Wing Chu），能后台、能导出 JSONL/ZIP、能一次录多个传感器。
+**它在国区 App Store 不一定有**——这就是为什么要切区。
+
+切区步骤（只需一次）：
+
+1. 在浏览器注册一个新的 Apple ID，**地区选美国或香港**，「付款方式」选「**无**」（要点：这一步必须先选好地区，否则没有"无"这个选项）。
+2. 手机「设置 → App Store → 退出登录」，用新 Apple ID 登录 **App Store**（不是 iCloud，这两处是分开的）。
+3. 搜 Sensor Logger 下载。
+4. 下完切回自己的账号：App Store 登回原账号，**已下载的应用不会消失**。
+
+⚠ 切区期间订阅、余额、付款都会受影响，**只用 App Store、不动 iCloud**，风险最低。
+⚠ 不想折腾就别走这条路，路 3 往往更划算。
+
+### 路 3：降级到 HealthKit（推荐的 iPhone 方案）
+
+**iPhone 自带「健康」App 里已经有大量现成数据**：步数、心率、静息心率、睡眠（有 Apple Watch 或用了睡眠专注模式时）。
+而且**一条命令就能全导出来**：
+
+```
+设置 → 隐私与安全性 → 健康 → 导出全部健康数据
+```
+
+得到一个 `export.zip`，里面最核心的是 `apple_health_export/导出.xml`。
+
+这份 XML 里找这几类记录：
+
+| type | 是什么 |
+|---|---|
+| `HKQuantityTypeIdentifierStepCount` | 步数 |
+| `HKQuantityTypeIdentifierHeartRate` | 心率 |
+| `HKCategoryTypeIdentifierSleepAnalysis` | 睡眠分期（有表才准） |
+| `HKQuantityTypeIdentifierRestingHeartRate` | 静息心率（比单次心率有用得多） |
+
+解析骨架（XML 很大，别整个读进内存，用流式）：
+
+```js
+// health-import.mjs —— 从苹果健康导出里挑出睡眠和步数
+import { createReadStream } from "fs";
+import readline from "readline";
+const rl = readline.createInterface({ input: createReadStream("导出.xml"), crlfDelay: Infinity });
+for await (const line of rl) {
+  if (!line.includes("<Record")) continue;
+  if (line.includes("SleepAnalysis") || line.includes("StepCount")) {
+    const t = line.match(/type="([^"]+)"/)?.[1];
+    const v = line.match(/value="([^"]+)"/)?.[1];
+    const st = line.match(/startDate="([^"]+)"/)?.[1];
+    if (t && v && st) console.log(t.split("Identifier")[1], st, v);
+  }
+}
+```
+
+**这条路的好处**：不装第三方、不切区、不耗电，数据还更准（睡眠分期是系统算的）。
+**代价**：拿不到原始 IMU——也就是说，你想要「凌晨三点你还在动」这种细节，HealthKit 给不了。
+
+### 一句话怎么选
+
+> **只想让 AI 知道你睡得好不好 → 路 3。**
+> **想要「几点才真的躺下」这种精度 → 路 1 试一晚，行就继续，不行再考虑路 2。**
+
+⚠ 无论哪条路，iPhone 上都要接受一件事：**它会断**。所以第七·五节那张「突然没数据」的排查表，苹果用户用得会比安卓多。
+
+---
+
 ## 四、传输：手机的数据怎么到服务器
 
 ### 4.1 最省事：rsync 定时推
@@ -180,6 +267,10 @@ rsync -avz --remove-source-files \
 ```
 
 放进 `crontab -e`（Termux 里用 `termux-job-scheduler` 更稳），每天一次。
+
+**iOS 上怎么办**：iOS 没有 Termux，走两条：
+- **快捷指令（Shortcuts）**：`文件 → 从目录获取` + `获取 URL 内容（POST）` 推到你的服务器；或用「自动化」每天定时跑。
+- **iCloud Drive 中转**：导出到 iCloud，服务器上用 `rclone` 拉 iCloud Drive（要单独配置一次）。
 
 ### 4.2 更省事：Syncthing
 
@@ -345,6 +436,32 @@ LEFT=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
 | 有没有在压 | `ls raw/*.gz \| wc -l` | 应该有几天了 |
 | 摘要有没有生成 | `ls out/*.md \| wc -l` | 一天一个 |
 | 盘还剩多少 | `df -h /` | > 20% |
+
+---
+
+
+---
+
+## 六·五、把一周画成一张图
+
+一串数字看不出形状，一张图能。用 `examples/make-chart.mjs`：
+
+```bash
+node examples/make-chart.mjs ~/body/raw docs/img/week.svg 8
+```
+
+它读最近 14 天的文件，画成这张（下面是**合成数据**，不是任何人的真实记录）：
+
+![一天的形状：动作量 vs 最长一段不动](img/demo-week.svg)
+
+**怎么看这张图**：
+
+- **柱子高** = 这天动得多。柱子在往下走，说明这几天越来越不动。
+- **下面的紫色条** = 最长一段没动的时间窗，标注了起止小时。**条往右移 = 睡得越来越晚。**
+- 连续几天条都在同一位置 → 作息稳定；条的位置一直变 → 睡眠在漂。
+
+⚠ 这张图是我用脚本画出来的，**我自己看不见渲染后的样子**（这台机器没有 SVG 渲染器，我只有源码）。
+所以如果你打开发现字叠在一起或者柱子超出画布，**那就是我错了，告诉我，我改**。
 
 ---
 
